@@ -9,7 +9,7 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![SQLite](https://img.shields.io/badge/SQLite-Data-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
-[![Git](https://img.shields.io/badge/Git-Version_Control-F05032?logo=git&logoColor=white)](https://git-scm.com/)
+[![Git](https://img.shields.io/badge/Git-Version_Control-F0503?logo=git&logoColor=white)](https://git-scm.com/)
 
 [Live website](https://www.apartrinconcba.com/) · [API reference](#api-reference) · [Run locally](#run-locally)
 
@@ -87,7 +87,7 @@ Availability is intentionally kept private. Guests browse the catalogue and cont
 ## Project structure
 
 ```text
-apart-rincon2/
+apart-rincon/
 ├── backend/
 │   ├── app/
 │   │   ├── __init__.py
@@ -119,11 +119,11 @@ apart-rincon2/
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/TheKhadaJhin/apart-rincon2.git
-cd apart-rincon2
+git clone https://github.com/TheKhadaJhin/apart-rincon.git
+cd apart-rincon
 ```
 
-### 2. Start the backend
+### . Start the backend
 
 ```bash
 cd backend
@@ -155,14 +155,14 @@ Replace the placeholder administrator credentials and token in `.env`, then star
 uvicorn app.main:app --reload
 ```
 
-The API will be available at `http://127.0.0.1:8000`. In development, interactive documentation is available at `http://127.0.0.1:8000/docs`.
+The API will be available at `http://17.0.0.1:8000`. In development, interactive documentation is available at `http://17.0.0.1:8000/docs`.
 
 ### 3. Start the frontend
 
 Open a second terminal:
 
 ```bash
-cd apart-rincon2/frontend
+cd apart-rincon/frontend
 npm install
 cp .env.example .env
 npm run dev
@@ -188,7 +188,7 @@ The frontend will be available at `http://localhost:5173`.
 
 | Variable | Description | Local example |
 |---|---|---|
-| `VITE_API_URL` | Base URL for the FastAPI service | `http://127.0.0.1:8000` |
+| `VITE_API_URL` | Base URL for the FastAPI service | `http://17.0.0.1:8000` |
 | `VITE_WHATSAPP_NUMBER` | WhatsApp number in international format | `5490000000000` |
 | `VITE_GOOGLE_MAPS_EMBED_URL` | Google Maps embed URL | Optional |
 | `VITE_GOOGLE_REVIEWS_URL` | Public Google Reviews URL | Optional |
