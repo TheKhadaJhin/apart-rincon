@@ -54,7 +54,7 @@ Availability is intentionally kept private. Guests browse the catalogue and cont
 
 ### Private administration
 
-- Credential-based login and bearer-token protection for administrative routes.
+- Credential-based login with signed, expiring bearer sessions for administrative routes.
 - Property content editing and multiple image uploads.
 - Gallery image upload and deletion workflows.
 - Reservation creation, editing, status management and deletion.
@@ -83,6 +83,8 @@ Availability is intentionally kept private. Guests browse the catalogue and cont
 - **Environment-based configuration:** API URLs, credentials, tokens, database paths and external links are configured outside the source code.
 - **Development-only API documentation:** Swagger UI, ReDoc and the OpenAPI document are disabled when the API runs with `ENVIRONMENT=production`.
 - **Controlled origins:** CORS is configured for the production domains and local development clients.
+- **Data minimization:** guest name, phone and notes are automatically anonymized after the configured retention period.
+- **Upload hardening:** image size, MIME type, extension and file signature are validated before storage; removed local images are deleted from disk.
 
 ## Project structure
 
@@ -149,7 +151,7 @@ cp .env.example .env
 
 On Windows, use `copy .env.example .env` if `cp` is unavailable.
 
-Replace the placeholder administrator credentials and token in `.env`, then start the API:
+Replace the placeholder administrator credentials and JWT signing secret in `.env`, then start the API:
 
 ```bash
 uvicorn app.main:app --reload
@@ -178,10 +180,14 @@ The frontend will be available at `http://localhost:5173`.
 |---|---|---|
 | `ADMIN_USER` | Administrator login username | `admin@example.com` |
 | `ADMIN_PASSWORD` | Administrator login password | Use a strong private value |
-| `ADMIN_TOKEN` | Bearer token returned after a valid login | Use a long random value |
+| `ADMIN_TOKEN` | Secret used to sign short-lived admin sessions | Use at least 32 random characters |
+| `ADMIN_SESSION_MINUTES` | Admin session lifetime | `60` |
 | `FRONTEND_URL` | Allowed frontend origin | `http://localhost:5173` |
 | `DATABASE_PATH` | SQLite database location | `./apartrincon.db` |
 | `UPLOAD_DIR` | Uploaded-image directory | `./static/uploads` |
+| `UPLOAD_MAX_BYTES` | Maximum uploaded image size | `8388608` |
+| `BOOKING_PERSONAL_DATA_RETENTION_DAYS` | Days before guest fields are anonymized | `365` |
+| `PRIVACY_CLEANUP_INTERVAL_SECONDS` | Frequency of automatic retention cleanup | `3600` |
 | `ENVIRONMENT` | Set to `production` to disable API documentation | `development` |
 
 ### Frontend
@@ -223,6 +229,7 @@ The frontend will be available at `http://localhost:5173`.
 | `POST` | `/api/admin/bookings` | Create a booking or block |
 | `PATCH` | `/api/admin/bookings/{booking_id}` | Update a booking |
 | `DELETE` | `/api/admin/bookings/{booking_id}` | Delete a booking |
+| `POST` | `/api/admin/privacy/purge-bookings` | Apply booking-data retention immediately |
 
 Protected routes expect the token in the `Authorization: Bearer <token>` header.
 
@@ -242,7 +249,7 @@ Protected routes expect the token in the `Authorization: Bearer <token>` header.
 - Store uploaded media in an object-storage service.
 - Add Docker-based local development.
 - Add continuous integration for tests and code quality checks.
-- Replace the static bearer token with expiring signed sessions and password hashing.
+- Store administrator identities in a dedicated database with password hashing and optional multi-factor authentication.
 
 ## Author
 

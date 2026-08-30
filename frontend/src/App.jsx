@@ -29,7 +29,9 @@ import {
 const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000'
 const WHATSAPP_NUMBER = import.meta.env.VITE_WHATSAPP_NUMBER || '5490000000000'
 const MAPS_EMBED_URL = import.meta.env.VITE_GOOGLE_MAPS_EMBED_URL || ''
-const GOOGLE_REVIEWS_URL = import.meta.env.VITE_GOOGLE_REVIEWS_URL || ''
+const GOOGLE_REVIEWS_URL =
+  import.meta.env.VITE_GOOGLE_REVIEWS_URL ||
+  'https://www.google.com/maps/search/?api=1&query=ApartRinc%C3%B3n%20Alta%20Gracia%20C%C3%B3rdoba'
 const INSTAGRAM_URL = import.meta.env.VITE_INSTAGRAM_URL || ''
 
 const fallbackProperties = [
@@ -56,39 +58,6 @@ const fallbackProperties = [
     accessibility: ['Circulación simple', 'Ambientes prácticos'],
     images: [],
     active: true
-  }
-]
-
-const reviews = [
-  {
-    text: 'Departamento hermoso, totalmente equipado y muy cómodo. La ubicación es tranquila y está cerca de Alta Gracia.',
-    author: 'Marcela Freitas',
-    source: 'Google'
-  },
-  {
-    text: 'Nos alojamos en el departamento más grande y quedamos encantados. Espacioso, seguro, luminoso y cerca de todo.',
-    author: 'Carolina Tazzioli',
-    source: 'Google'
-  },
-  {
-    text: 'Muy lindo departamento, limpio y con dueños siempre atentos a lo que necesitábamos. Muy recomendable.',
-    author: 'Ezequiel K',
-    source: 'Google'
-  },
-  {
-    text: 'Excelente atención, espacios cuidados y todo lo necesario para una estadía confortable.',
-    author: 'Huésped de ApartRincón',
-    source: 'Google'
-  },
-  {
-    text: 'Muy buena experiencia. Se destaca la tranquilidad del lugar, la limpieza y la comunicación clara.',
-    author: 'Reseña destacada',
-    source: 'Google'
-  },
-  {
-    text: 'Lugar cómodo para descansar, con detalles pensados para que el huésped se sienta bien recibido.',
-    author: 'Experiencia de huésped',
-    source: 'Google'
   }
 ]
 
@@ -330,12 +299,12 @@ function HomePage() {
                 <span>propiedades</span>
               </div>
               <div>
-                <strong>5.0</strong>
-                <span>calificación Google</span>
+                <strong>Directa</strong>
+                <span>atención por WhatsApp</span>
               </div>
               <div>
-                <strong>38</strong>
-                <span>reseñas</span>
+                <strong>Alta Gracia</strong>
+                <span>Córdoba</span>
               </div>
             </div>
           </div>
@@ -437,7 +406,7 @@ function WhyChooseUsPage() {
 
         <section className="section comfort-section">
           <div className="comfort-grid">
-            <InfoCard title="Calificación 5.0" text="ApartRincón cuenta con una base de reseñas positiva en Google, útil para generar confianza inmediata." />
+            <InfoCard title="Opiniones públicas" text="Las reseñas se consultan directamente en Google para mantener visible su fuente original." />
             <InfoCard title="Comunicación directa" text="Coordinás disponibilidad, fechas y detalles por WhatsApp con atención personalizada." />
             <InfoCard title="Espacios equipados" text="Las propiedades se presentan con servicios, capacidad, fotos y descripción clara." />
             <InfoCard title="Zona tranquila" text="Ubicación en km22 Valle Mitimay, Ruta 5, cerca de Alta Gracia, Córdoba." />
@@ -573,6 +542,11 @@ function ContactPage() {
             Hablar por WhatsApp
           </a>
         </PageHero>
+        <p className="section contact-privacy-note">
+          Al continuar por WhatsApp, ese servicio recibirá tu número y el mensaje que decidas enviar. ApartRincón
+          usará los datos únicamente para responder y gestionar tu consulta o reserva. Leé nuestra{' '}
+          <a href="/privacidad">Política de privacidad</a>.
+        </p>
         <LocationSection />
       </main>
       <Footer />
@@ -704,75 +678,22 @@ function PropertyCard({ property, index }) {
 }
 
 function ReviewsCarousel() {
-  const pageSize = 3
-  const totalPages = Math.ceil(reviews.length / pageSize)
-  const [page, setPage] = useState(0)
-
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setPage((current) => (current + 1) % totalPages)
-    }, 7000)
-    return () => clearInterval(timer)
-  }, [totalPages])
-
-  const visibleReviews = reviews.slice(page * pageSize, page * pageSize + pageSize)
-
   return (
     <section className="section reviews-section">
       <div className="section-heading">
-        <p className="eyebrow">Reseñas de Google</p>
-        <h2>Experiencias de huéspedes.</h2>
+        <p className="eyebrow">Fuente original</p>
+        <h2>Opiniones públicas en Google.</h2>
         
       </div>
 
-      <div className="reviews-toolbar">
-        <div className="rating-pill">
-          <Star size={18} fill="currentColor" />
-          5.0 · 38 reseñas
-        </div>
-        <div className="review-controls">
-          <button className="icon-button" onClick={() => setPage((page - 1 + totalPages) % totalPages)} aria-label="Reseñas anteriores">
-            <ChevronLeft size={20} />
-          </button>
-          <button className="icon-button" onClick={() => setPage((page + 1) % totalPages)} aria-label="Reseñas siguientes">
-            <ChevronRight size={20} />
-          </button>
-        </div>
-      </div>
-
-      <div className="review-grid">
-        {visibleReviews.map((item) => (
-          <article className="review-card" key={`${item.author}-${item.text}`}>
-            <div className="stars" aria-label="5 estrellas">
-              {Array.from({ length: 5 }).map((_, index) => (
-                <Star key={index} size={18} fill="currentColor" />
-              ))}
-            </div>
-            <p>“{item.text}”</p>
-            <strong>{item.author}</strong>
-            <small>{item.source}</small>
-          </article>
-        ))}
-      </div>
-
-      <div className="review-dots" aria-label="Páginas de reseñas">
-        {Array.from({ length: totalPages }).map((_, index) => (
-          <button
-            key={index}
-            className={index === page ? 'active' : ''}
-            onClick={() => setPage(index)}
-            aria-label={`Ir a grupo de reseñas ${index + 1}`}
-          />
-        ))}
-      </div>
-
-      {GOOGLE_REVIEWS_URL ? (
-        <a className="button secondary centered" href={GOOGLE_REVIEWS_URL} target="_blank" rel="noreferrer">
-          Ver reseñas en Google
-        </a>
-      ) : (
-        <p className="placeholder-note">El enlace directo a reseñas de Google estará disponible próximamente.</p>
-      )}
+      <p className="placeholder-note">
+        Para evitar testimonios desactualizados o sin una fuente comprobable, no reproducimos reseñas manualmente
+        dentro del sitio. Podés ver autores, fechas y texto vigente directamente en Google.
+      </p>
+      <a className="button secondary centered" href={GOOGLE_REVIEWS_URL} target="_blank" rel="noreferrer">
+        <Star size={18} />
+        Ver reseñas en Google
+      </a>
     </section>
   )
 }
@@ -865,13 +786,150 @@ function Footer() {
     <footer className="footer">
       <img src="/images/logo.png" alt="ApartRincón" />
       <span>© {new Date().getFullYear()} ApartRincón. Departamentos por temporada.</span>
+      <nav className="footer-links" aria-label="Información legal">
+        <a href="/privacidad">Privacidad</a>
+        <a href="/terminos">Términos</a>
+      </nav>
     </footer>
   )
 }
 
+function PrivacyPage() {
+  return (
+    <Shell>
+      <main>
+        <PageHero
+          eyebrow="Información legal"
+          title="Política de privacidad."
+          text="Versión vigente: 30 de agosto de 2026."
+        />
+        <article className="section legal-content">
+          <section>
+            <h2>Responsable y contacto</h2>
+            <p>
+              ApartRincón gestiona departamentos por temporada en km22 Valle Mitimay, Ruta 5, X5186 Alta Gracia,
+              Córdoba, Argentina. Para consultas sobre datos personales o para ejercer derechos, comunicate al
+              03547 45-6045 o mediante el WhatsApp oficial publicado en este sitio.
+            </p>
+          </section>
+          <section>
+            <h2>Qué datos tratamos y para qué</h2>
+            <p>
+              El sitio público muestra propiedades y no crea cuentas de huéspedes. Cuando nos contactás podemos
+              registrar nombre, teléfono, fechas, propiedad consultada y notas necesarias para responder,
+              coordinar una reserva, prestar la estadía y cumplir obligaciones legales. No vendemos estos datos.
+            </p>
+          </section>
+          <section>
+            <h2>Servicios de terceros</h2>
+            <p>
+              Al abrir WhatsApp, Instagram, Google Maps o Google Reviews, esos proveedores reciben los datos
+              técnicos y el contenido que decidas enviar conforme a sus propias políticas. El alojamiento de la
+              web y de la base operativa puede tratar datos solo para prestar infraestructura a ApartRincón.
+            </p>
+          </section>
+          <section>
+            <h2>Conservación y seguridad</h2>
+            <p>
+              Los datos operativos de una reserva se restringen al panel privado y se anonimizan automáticamente
+              365 días después de finalizar la estadía. Podremos conservar constancias mínimas por plazos legales.
+              Las fotos que sube la administración son públicas por su finalidad; al retirarlas del panel también
+              se elimina el archivo local. Se aplican sesiones con vencimiento, validación de archivos y controles
+              de acceso, aunque ningún sistema puede garantizar riesgo cero.
+            </p>
+          </section>
+          <section>
+            <h2>Cookies, inteligencia artificial y decisiones</h2>
+            <p>
+              El sitio público no usa cuentas, cookies de sesión propias ni decisiones automatizadas. ApartRincón
+              no ofrece un asistente de IA ni usa IA para aceptar o rechazar reservas. Si estas prácticas cambian,
+              esta política se actualizará antes de aplicar el nuevo tratamiento.
+            </p>
+          </section>
+          <section>
+            <h2>Tus derechos</h2>
+            <p>
+              Podés solicitar acceso, rectificación, actualización o supresión por los canales indicados. Una
+              supresión puede limitarse cuando exista una obligación legal de conservación. También podés
+              consultar o reclamar ante la Agencia de Acceso a la Información Pública de Argentina.
+            </p>
+          </section>
+        </article>
+      </main>
+      <Footer />
+    </Shell>
+  )
+}
+
+function TermsPage() {
+  return (
+    <Shell>
+      <main>
+        <PageHero
+          eyebrow="Información legal"
+          title="Términos y condiciones."
+          text="Versión vigente: 30 de agosto de 2026."
+        />
+        <article className="section legal-content">
+          <section>
+            <h2>Consultas y reservas</h2>
+            <p>
+              La información del sitio es descriptiva. Disponibilidad, tarifa final, cantidad de huéspedes,
+              duración, servicios incluidos, ingreso y salida se confirman directamente por WhatsApp antes de
+              reservar. Una consulta no bloquea fechas hasta que ApartRincón lo confirme expresamente.
+            </p>
+          </section>
+          <section>
+            <h2>Pagos, cambios y cancelaciones</h2>
+            <p>
+              El medio de pago, seña y saldo se informan antes de confirmar. Las condiciones particulares de
+              cambio o cancelación se comunican de forma clara durante la reserva y se aplican respetando la Ley
+              de Defensa del Consumidor y demás normas argentinas. Podés gestionar una cancelación por el mismo
+              WhatsApp o teléfono usado para contratar, sin pasos artificialmente más difíciles.
+            </p>
+          </section>
+          <section>
+            <h2>Uso de la propiedad</h2>
+            <p>
+              La persona que reserva debe brindar datos correctos, respetar la capacidad acordada, las normas de
+              convivencia y el cuidado de las instalaciones. Cualquier condición especial se informa y acepta
+              antes de la estadía.
+            </p>
+          </section>
+          <section>
+            <h2>Sin renovaciones automáticas</h2>
+            <p>
+              ApartRincón ofrece estadías puntuales: no activa suscripciones, renovaciones automáticas ni cobros
+              recurrentes. Toda extensión de una estadía requiere una nueva confirmación expresa de fechas y precio.
+            </p>
+          </section>
+          <section>
+            <h2>Reseñas y servicios externos</h2>
+            <p>
+              No reproducimos testimonios manualmente: las opiniones, sus autores y sus fechas se consultan en la
+              fuente original de Google. WhatsApp, Google, Instagram y otros enlaces externos se rigen además por
+              sus propias condiciones.
+            </p>
+          </section>
+          <section>
+            <h2>Privacidad, cambios y contacto</h2>
+            <p>
+              El tratamiento de datos se explica en la <a href="/privacidad">Política de privacidad</a>. Podemos
+              actualizar estos términos indicando la nueva fecha. Para consultas, llamá al 03547 45-6045 o usá el
+              WhatsApp oficial del sitio. Se aplica la legislación argentina y las protecciones irrenunciables de
+              las personas consumidoras.
+            </p>
+          </section>
+        </article>
+      </main>
+      <Footer />
+    </Shell>
+  )
+}
+
 function AdminApp() {
-  const [token, setToken] = useState(localStorage.getItem('apart_admin_token') || '')
-  const [loginData, setLoginData] = useState({ username: 'admin@apartrincon.com', password: '' })
+  const [token, setToken] = useState(sessionStorage.getItem('apart_admin_token') || '')
+  const [loginData, setLoginData] = useState({ username: '', password: '' })
   const [properties, setProperties] = useState([])
   const [bookings, setBookings] = useState([])
   const [galleryImages, setGalleryImages] = useState([])
@@ -903,6 +961,10 @@ function AdminApp() {
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({ detail: 'Error desconocido' }))
+      if (response.status === 401) {
+        sessionStorage.removeItem('apart_admin_token')
+        setToken('')
+      }
       throw new Error(error.detail || 'Error de API')
     }
 
@@ -923,7 +985,8 @@ function AdminApp() {
       if (!response.ok) throw new Error('Credenciales inválidas')
 
       const data = await response.json()
-      localStorage.setItem('apart_admin_token', data.access_token)
+      sessionStorage.setItem('apart_admin_token', data.access_token)
+      localStorage.removeItem('apart_admin_token')
       setToken(data.access_token)
       setMessage('Sesión iniciada correctamente.')
     } catch (error) {
@@ -955,6 +1018,7 @@ function AdminApp() {
   }
 
   useEffect(() => {
+    localStorage.removeItem('apart_admin_token')
     loadAdminData()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token])
@@ -1167,7 +1231,24 @@ function AdminApp() {
     }
   }
 
+  async function purgeExpiredBookingData() {
+    if (!confirm('¿Aplicar ahora la limpieza de datos personales de reservas vencidas?')) return
+    setSaving(true)
+    setMessage('')
+
+    try {
+      const result = await adminFetch('/api/admin/privacy/purge-bookings', { method: 'POST' })
+      await loadAdminData()
+      setMessage(`Privacidad aplicada: ${result.purged_bookings} reserva(s) anonimizada(s).`)
+    } catch (error) {
+      setMessage(error.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
   function logout() {
+    sessionStorage.removeItem('apart_admin_token')
     localStorage.removeItem('apart_admin_token')
     setToken('')
     setProperties([])
@@ -1198,6 +1279,7 @@ function AdminApp() {
                 value={loginData.username}
                 onChange={(event) => setLoginData({ ...loginData, username: event.target.value })}
                 autoComplete="username"
+                placeholder="Usuario administrador"
               />
             </label>
             <label>
@@ -1207,7 +1289,7 @@ function AdminApp() {
                 value={loginData.password}
                 onChange={(event) => setLoginData({ ...loginData, password: event.target.value })}
                 autoComplete="current-password"
-                placeholder="cambiar123"
+                placeholder="Tu contraseña"
               />
             </label>
             <button className="button primary full" type="submit">
@@ -1248,6 +1330,20 @@ function AdminApp() {
         </header>
 
         {message && <p className="admin-message">{message}</p>}
+
+        <section className="admin-section legal-admin-card">
+          <div>
+            <h3>Privacidad de huéspedes</h3>
+            <p className="admin-help">
+              Nombre, teléfono y notas se anonimizan automáticamente 365 días después de la salida. También podés
+              ejecutar la limpieza manualmente.
+            </p>
+          </div>
+          <button className="button ghost" type="button" onClick={purgeExpiredBookingData} disabled={saving}>
+            <ShieldCheck size={18} />
+            Limpiar datos vencidos
+          </button>
+        </section>
 
         <section className="admin-section">
           <h3>Agenda privada</h3>
@@ -1853,6 +1949,8 @@ function PublicRouter() {
   if (path === '/propiedades') return <PropertiesPage />
   if (path === '/galeria') return <GalleryPage />
   if (path === '/contacto') return <ContactPage />
+  if (path === '/privacidad') return <PrivacyPage />
+  if (path === '/terminos') return <TermsPage />
 
   return <HomePage />
 }

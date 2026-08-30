@@ -747,6 +747,75 @@ img {
   object-fit: cover;
 }
 
+.footer-links {
+  display: flex;
+  gap: 1rem;
+  margin-left: auto;
+}
+
+.footer-links a,
+.legal-content a,
+.contact-privacy-note a {
+  color: var(--aqua);
+  text-decoration: none;
+}
+
+.footer-links a:hover,
+.legal-content a:hover,
+.contact-privacy-note a:hover {
+  text-decoration: underline;
+}
+
+.legal-content {
+  width: min(860px, calc(100% - 2rem));
+  display: grid;
+  gap: 1.25rem;
+}
+
+.legal-content section,
+.contact-privacy-note {
+  padding: 1.5rem;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: var(--panel);
+}
+
+.legal-content h2 {
+  margin: 0 0 0.75rem;
+  font-size: clamp(1.2rem, 2vw, 1.55rem);
+}
+
+.legal-content p,
+.contact-privacy-note {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.75;
+}
+
+.legal-admin-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+@media (max-width: 700px) {
+  .footer {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .footer-links {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .legal-admin-card {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
 /* Admin */
 .admin-page,
 .admin-dashboard {
