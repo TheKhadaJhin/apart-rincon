@@ -5,14 +5,17 @@ import contextlib
 import logging
 import secrets
 import sqlite3
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import Lock
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 import jwt
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
@@ -55,15 +58,43 @@ app = FastAPI(
     openapi_url=None if is_production else "/openapi.json",
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        FRONTEND_URL,
+
+def normalize_origin(value: str) -> str:
+    value = str(value or "").strip().rstrip("/")
+    if not value:
+        return ""
+
+    parsed = urlparse(value)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return value
+
+
+frontend_origin = normalize_origin(FRONTEND_URL)
+trusted_https_origins = [
+    frontend_origin,
+    "https://www.apartrinconcba.com",
+    "https://apartrinconcba.com",
+]
+
+if is_production:
+    cors_origins = [
+        origin for origin in trusted_https_origins if origin.startswith("https://")
+    ]
+else:
+    cors_origins = [
+        frontend_origin,
         "https://www.apartrinconcba.com",
         "https://apartrinconcba.com",
         "http://localhost:5173",
         "http://127.0.0.1:5173",
-    ],
+    ]
+
+cors_origins = list(dict.fromkeys(origin for origin in cors_origins if origin))
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
@@ -77,19 +108,81 @@ async def add_security_headers(request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    if is_production:
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=31536000; includeSubDomains"
+        )
     return response
 
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 
 class LoginRequest(BaseModel):
-    username: str
-    password: str
+    username: str = Field(min_length=1, max_length=160)
+    password: str = Field(min_length=1, max_length=256)
 
 
 class LoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+ADMIN_LOGIN_MAX_FAILED = 5
+ADMIN_LOGIN_LOCKOUT_SECONDS = 15 * 60
+_admin_login_attempts: dict[str, dict[str, float]] = {}
+_admin_login_attempts_lock = Lock()
+
+
+def _admin_login_key(request: Request, username: str) -> str:
+    client_host = request.client.host if request.client else "unknown"
+    return f"{client_host}:{username.strip().lower()}"
+
+
+def _check_admin_login_lock(key: str) -> int:
+    now = time.monotonic()
+    with _admin_login_attempts_lock:
+        # Keep this process-local guard bounded even if an attacker rotates usernames.
+        expired = [
+            item_key
+            for item_key, item in _admin_login_attempts.items()
+            if item.get("blocked_until", 0) <= now and item.get("last_attempt", 0) + ADMIN_LOGIN_LOCKOUT_SECONDS <= now
+        ]
+        for item_key in expired:
+            _admin_login_attempts.pop(item_key, None)
+
+        item = _admin_login_attempts.get(key)
+        if not item:
+            return 0
+
+        blocked_until = item.get("blocked_until", 0)
+        if blocked_until > now:
+            return max(1, int(blocked_until - now))
+
+        return 0
+
+
+def _record_admin_login_failure(key: str) -> bool:
+    now = time.monotonic()
+    with _admin_login_attempts_lock:
+        if key not in _admin_login_attempts and len(_admin_login_attempts) >= 10_000:
+            oldest_key = min(
+                _admin_login_attempts,
+                key=lambda item_key: _admin_login_attempts[item_key].get("last_attempt", 0),
+            )
+            _admin_login_attempts.pop(oldest_key, None)
+
+        item = _admin_login_attempts.setdefault(key, {"failed": 0.0})
+        item["failed"] = item.get("failed", 0) + 1
+        item["last_attempt"] = now
+        if item["failed"] >= ADMIN_LOGIN_MAX_FAILED:
+            item["blocked_until"] = now + ADMIN_LOGIN_LOCKOUT_SECONDS
+            return True
+    return False
+
+
+def _clear_admin_login_failures(key: str) -> None:
+    with _admin_login_attempts_lock:
+        _admin_login_attempts.pop(key, None)
 
 
 class PropertyBase(BaseModel):
@@ -474,21 +567,39 @@ def health() -> dict[str, str]:
 
 
 @app.post("/api/auth/login", response_model=LoginResponse)
-def login(payload: LoginRequest) -> LoginResponse:
+def login(payload: LoginRequest, request: Request) -> LoginResponse:
     if not ADMIN_USER or not ADMIN_PASSWORD or len(ADMIN_TOKEN) < 32:
         raise HTTPException(
             status_code=503,
             detail="El acceso administrativo todavía no fue configurado",
         )
 
+    attempt_key = _admin_login_key(request, payload.username)
+    retry_after = _check_admin_login_lock(attempt_key)
+    if retry_after:
+        raise HTTPException(
+            status_code=429,
+            detail="Demasiados intentos. Volvé a intentar más tarde.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
     valid_user = secrets.compare_digest(
-        payload.username.encode("utf-8"), ADMIN_USER.encode("utf-8")
+        payload.username.strip().encode("utf-8"), ADMIN_USER.encode("utf-8")
     )
     valid_password = secrets.compare_digest(
         payload.password.encode("utf-8"), ADMIN_PASSWORD.encode("utf-8")
     )
     if not valid_user or not valid_password:
+        locked = _record_admin_login_failure(attempt_key)
+        if locked:
+            raise HTTPException(
+                status_code=429,
+                detail="Demasiados intentos. Volvé a intentar más tarde.",
+                headers={"Retry-After": str(ADMIN_LOGIN_LOCKOUT_SECONDS)},
+            )
         raise HTTPException(status_code=401, detail="Credenciales inválidas")
+
+    _clear_admin_login_failures(attempt_key)
     return LoginResponse(access_token=create_admin_token())
 
 
