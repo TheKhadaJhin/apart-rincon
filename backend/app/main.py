@@ -15,7 +15,15 @@ from urllib.parse import urlparse
 
 import jwt
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Header,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
@@ -147,7 +155,8 @@ def _check_admin_login_lock(key: str) -> int:
         expired = [
             item_key
             for item_key, item in _admin_login_attempts.items()
-            if item.get("blocked_until", 0) <= now and item.get("last_attempt", 0) + ADMIN_LOGIN_LOCKOUT_SECONDS <= now
+            if item.get("blocked_until", 0) <= now
+            and item.get("last_attempt", 0) + ADMIN_LOGIN_LOCKOUT_SECONDS <= now
         ]
         for item_key in expired:
             _admin_login_attempts.pop(item_key, None)
@@ -169,7 +178,9 @@ def _record_admin_login_failure(key: str) -> bool:
         if key not in _admin_login_attempts and len(_admin_login_attempts) >= 10_000:
             oldest_key = min(
                 _admin_login_attempts,
-                key=lambda item_key: _admin_login_attempts[item_key].get("last_attempt", 0),
+                key=lambda item_key: _admin_login_attempts[item_key].get(
+                    "last_attempt", 0
+                ),
             )
             _admin_login_attempts.pop(oldest_key, None)
 
