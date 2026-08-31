@@ -157,7 +157,7 @@ Replace the placeholder administrator credentials and JWT signing secret in `.en
 uvicorn app.main:app --reload
 ```
 
-The API will be available at `http://17.0.0.1:8000`. In development, interactive documentation is available at `http://17.0.0.1:8000/docs`.
+The API will be available at `http://127.0.0.1:8000`. In development, interactive documentation is available at `http://127.0.0.1:8000/docs`.
 
 ### 3. Start the frontend
 
@@ -194,7 +194,7 @@ The frontend will be available at `http://localhost:5173`.
 
 | Variable | Description | Local example |
 |---|---|---|
-| `VITE_API_URL` | Base URL for the FastAPI service | `http://17.0.0.1:8000` |
+| `VITE_API_URL` | Base URL for the FastAPI service | `http://127.0.0.1:8000` |
 | `VITE_WHATSAPP_NUMBER` | WhatsApp number in international format | `5490000000000` |
 | `VITE_GOOGLE_MAPS_EMBED_URL` | Google Maps embed URL | Optional |
 | `VITE_GOOGLE_REVIEWS_URL` | Public Google Reviews URL | Optional |
