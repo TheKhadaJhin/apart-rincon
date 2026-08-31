@@ -194,7 +194,7 @@ function Shell({ children }) {
         className="floating-whatsapp"
         href={buildWhatsappUrl()}
         target={buildWhatsappUrl().startsWith('http') ? '_blank' : undefined}
-        rel="noreferrer"
+        rel="noopener noreferrer"
         aria-label="Consultar por WhatsApp"
       >
         <MessageCircle size={24} />
@@ -287,7 +287,7 @@ function HomePage() {
                 className="button secondary"
                 href={buildWhatsappUrl()}
                 target={buildWhatsappUrl().startsWith('http') ? '_blank' : undefined}
-                rel="noreferrer"
+                rel="noopener noreferrer"
               >
                 Consultar disponibilidad
               </a>
@@ -323,7 +323,7 @@ function HomePage() {
               className="availability-pill hero-whatsapp-pill"
               href={buildWhatsappUrl()}
               target={buildWhatsappUrl().startsWith('http') ? '_blank' : undefined}
-              rel="noreferrer"
+              rel="noopener noreferrer"
             >
               <MessageCircle size={18} />
               Consulta personalizada por WhatsApp
@@ -536,7 +536,7 @@ function ContactPage() {
             className="button primary large"
             href={buildWhatsappUrl()}
             target={buildWhatsappUrl().startsWith('http') ? '_blank' : undefined}
-            rel="noreferrer"
+            rel="noopener noreferrer"
           >
             <MessageCircle size={20} />
             Hablar por WhatsApp
@@ -666,7 +666,7 @@ function PropertyCard({ property, index }) {
             className="button primary"
             href={buildWhatsappUrl(property.name)}
             target={buildWhatsappUrl(property.name).startsWith('http') ? '_blank' : undefined}
-            rel="noreferrer"
+            rel="noopener noreferrer"
           >
             <MessageCircle size={18} />
             Consultar por WhatsApp
@@ -690,7 +690,7 @@ function ReviewsCarousel() {
         Para evitar testimonios desactualizados o sin una fuente comprobable, no reproducimos reseñas manualmente
         dentro del sitio. Podés ver autores, fechas y texto vigente directamente en Google.
       </p>
-      <a className="button secondary centered" href={GOOGLE_REVIEWS_URL} target="_blank" rel="noreferrer">
+      <a className="button secondary centered" href={GOOGLE_REVIEWS_URL} target="_blank" rel="noopener noreferrer">
         <Star size={18} />
         Ver reseñas en Google
       </a>
@@ -718,7 +718,7 @@ function LocationSection() {
             03547 45-6045
           </span>
           {INSTAGRAM_URL && (
-            <a href={INSTAGRAM_URL} target="_blank" rel="noreferrer">
+            <a href={INSTAGRAM_URL} target="_blank" rel="noopener noreferrer">
               Instagram
             </a>
           )}
@@ -760,7 +760,7 @@ function ContactCTA() {
         className="button primary large"
         href={buildWhatsappUrl()}
         target={buildWhatsappUrl().startsWith('http') ? '_blank' : undefined}
-        rel="noreferrer"
+        rel="noopener noreferrer"
       >
         <MessageCircle size={20} />
         Hablar por WhatsApp
@@ -1615,7 +1615,7 @@ function BookingRow({ booking, property, onEdit, onDelete, onStatusChange }) {
         )}
 
         {guestWhatsapp && (
-          <a className="button secondary compact" href={guestWhatsapp} target="_blank" rel="noreferrer">
+          <a className="button secondary compact" href={guestWhatsapp} target="_blank" rel="noopener noreferrer">
             <MessageCircle size={16} />
             WhatsApp
           </a>
