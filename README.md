@@ -21,7 +21,7 @@ Apart Rincón is a full-stack web platform built for a real short-term rental bu
 
 The application combines a responsive public website with a private operational dashboard. Guests can explore the properties, services, photographs, reviews and location before starting a personalized WhatsApp inquiry. Administrators manage property content, gallery images and the reservation calendar through protected API routes.
 
-This project demonstrates how I translate a real business workflow into a deployed application with a React frontend, a FastAPI REST API and persistent data storage.
+This project demonstrates how I translate a real business workflow into a deployed application with a React frontend, a FastAPI REST API and database-backed storage.
 
 ## Business workflow
 
@@ -73,6 +73,8 @@ Availability is intentionally kept private. Guests browse the catalogue and cont
 | Media | FastAPI uploads and static file serving | Property and gallery image management |
 | Integration | WhatsApp, Google Maps, Google Reviews, Instagram | Customer contact and business presence |
 | Deployment | Vercel, custom domain, separately deployed API | Production delivery |
+
+> **Production persistence requirement:** SQLite and local uploads need a persistent volume. On an ephemeral host, configure durable storage or migrate the database/media to managed services before accepting real reservations.
 | Workflow | Git and GitHub | Version control and project documentation |
 
 ## Architecture and engineering decisions
