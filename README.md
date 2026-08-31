@@ -54,7 +54,7 @@ Availability is intentionally kept private. Guests browse the catalogue and cont
 
 ### Private administration
 
-- Credential-based login with signed, expiring bearer sessions for administrative routes.
+- Credential-based login with signed, expiring bearer sessions and temporary lockout after repeated failures.
 - Property content editing and multiple image uploads.
 - Gallery image upload and deletion workflows.
 - Reservation creation, editing, status management and deletion.
