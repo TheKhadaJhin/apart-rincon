@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { createAdminApi } from './adminApi.mjs'
 import {
   BedDouble,
   CalendarDays,
@@ -928,7 +929,9 @@ function TermsPage() {
 }
 
 function AdminApp() {
-  const [token, setToken] = useState(sessionStorage.getItem('apart_admin_token') || '')
+  const [token, setToken] = useState('')
+  const [sessionExpiresAt, setSessionExpiresAt] = useState(0)
+  const [loggingIn, setLoggingIn] = useState(false)
   const [loginData, setLoginData] = useState({ username: '', password: '' })
   const [properties, setProperties] = useState([])
   const [bookings, setBookings] = useState([])
@@ -949,48 +952,40 @@ function AdminApp() {
     notes: ''
   })
 
-  async function adminFetch(path, options = {}) {
-    const response = await fetch(`${API_URL}${path}`, {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-        ...(options.headers || {})
+  const [adminApi] = useState(() => createAdminApi(API_URL, {
+    onSessionChange(session) {
+      setToken(session?.token || '')
+      setSessionExpiresAt(session?.expiresAt || 0)
+      if (!session) {
+        setProperties([])
+        setBookings([])
+        setGalleryImages([])
+        setEditingBooking(null)
+        setSelectedCalendarProperty('')
+        setBookingForm({
+          property_id: '', guest_name: '', phone: '', start_date: '',
+          end_date: '', status: 'reserved', notes: ''
+        })
       }
-    })
-
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ detail: 'Error desconocido' }))
-      if (response.status === 401) {
-        sessionStorage.removeItem('apart_admin_token')
-        setToken('')
-      }
-      throw new Error(error.detail || 'Error de API')
     }
+  }))
 
-    return response.json()
+  async function adminFetch(path, options = {}) {
+    return adminApi.request(path, options)
   }
 
   async function login(event) {
     event.preventDefault()
     setMessage('')
-
+    setLoggingIn(true)
     try {
-      const response = await fetch(`${API_URL}/api/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(loginData)
-      })
-
-      if (!response.ok) throw new Error('Credenciales inválidas')
-
-      const data = await response.json()
-      sessionStorage.setItem('apart_admin_token', data.access_token)
-      localStorage.removeItem('apart_admin_token')
-      setToken(data.access_token)
+      await adminApi.login(loginData)
       setMessage('Sesión iniciada correctamente.')
     } catch (error) {
       setMessage(error.message)
+    } finally {
+      setLoginData((current) => ({ ...current, password: '' }))
+      setLoggingIn(false)
     }
   }
 
@@ -1018,10 +1013,28 @@ function AdminApp() {
   }
 
   useEffect(() => {
-    localStorage.removeItem('apart_admin_token')
+    // Remove tokens saved by older versions without restoring them.
+    try {
+      localStorage.removeItem('apart_admin_token')
+      sessionStorage.removeItem('apart_admin_token')
+    } catch {
+      // Storage can be unavailable; the new session uses memory only.
+    }
+  }, [])
+
+  useEffect(() => {
     loadAdminData()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token])
+
+  useEffect(() => {
+    if (!sessionExpiresAt) return
+    const timeout = setTimeout(() => {
+      adminApi.clearSession()
+      setMessage('La sesión venció. Volvé a ingresar.')
+    }, Math.max(0, sessionExpiresAt - Date.now()))
+    return () => clearTimeout(timeout)
+  }, [adminApi, sessionExpiresAt])
 
   async function saveProperty(property) {
     setSaving(true)
@@ -1056,18 +1069,10 @@ function AdminApp() {
       const formData = new FormData()
       formData.append('file', file)
 
-      const response = await fetch(`${API_URL}/api/admin/properties/${propertyId}/images`, {
+      const updated = await adminFetch(`/api/admin/properties/${propertyId}/images`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
         body: formData
       })
-
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: 'Error subiendo imagen' }))
-        throw new Error(error.detail || 'Error subiendo imagen')
-      }
-
-      const updated = await response.json()
       setProperties((current) => current.map((item) => (item.id === updated.id ? updated : item)))
       setMessage('Imagen cargada en la propiedad.')
     } catch (error) {
@@ -1086,16 +1091,10 @@ function AdminApp() {
       const formData = new FormData()
       formData.append('file', file)
 
-      const response = await fetch(`${API_URL}/api/admin/gallery/images`, {
+      await adminFetch('/api/admin/gallery/images', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
         body: formData
       })
-
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: 'Error subiendo imagen a galería' }))
-        throw new Error(error.detail || 'Error subiendo imagen a galería')
-      }
 
       await loadAdminData()
       setMessage('Imagen cargada en la galería general.')
@@ -1247,14 +1246,13 @@ function AdminApp() {
     }
   }
 
-  function logout() {
-    sessionStorage.removeItem('apart_admin_token')
-    localStorage.removeItem('apart_admin_token')
-    setToken('')
-    setProperties([])
-    setBookings([])
-    setGalleryImages([])
-    setEditingBooking(null)
+  async function logout() {
+    try {
+      await adminApi.logout()
+      setMessage('Sesión cerrada.')
+    } catch (error) {
+      setMessage(error.message)
+    }
   }
 
   const filteredBookings = bookings.filter((booking) => {
@@ -1279,6 +1277,8 @@ function AdminApp() {
                 value={loginData.username}
                 onChange={(event) => setLoginData({ ...loginData, username: event.target.value })}
                 autoComplete="username"
+                required
+                maxLength={160}
                 placeholder="Usuario administrador"
               />
             </label>
@@ -1289,12 +1289,14 @@ function AdminApp() {
                 value={loginData.password}
                 onChange={(event) => setLoginData({ ...loginData, password: event.target.value })}
                 autoComplete="current-password"
+                required
+                maxLength={256}
                 placeholder="Tu contraseña"
               />
             </label>
-            <button className="button primary full" type="submit">
+            <button className="button primary full" type="submit" disabled={loggingIn}>
               <Lock size={18} />
-              Entrar
+              {loggingIn ? 'Ingresando…' : 'Entrar'}
             </button>
           </form>
 

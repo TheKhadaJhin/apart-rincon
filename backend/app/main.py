@@ -3,17 +3,14 @@ import os
 import asyncio
 import contextlib
 import logging
-import secrets
 import sqlite3
-import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from threading import Lock
 from typing import Any, Optional
 from urllib.parse import urlparse
 
-import jwt
+from .security import AdminAuth, AuthSettings
 from dotenv import load_dotenv
 from fastapi import (
     Depends,
@@ -35,24 +32,10 @@ logger = logging.getLogger(__name__)
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
 is_production = ENVIRONMENT == "production"
 
-ADMIN_USER = os.getenv("ADMIN_USER", "").strip()
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
-ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
-ADMIN_SESSION_MINUTES = max(5, int(os.getenv("ADMIN_SESSION_MINUTES", "60")))
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 DATABASE_PATH = os.getenv("DATABASE_PATH", "./apartrincon.db")
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "./static/uploads"))
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-
-if is_production and (
-    not ADMIN_USER
-    or not ADMIN_PASSWORD
-    or len(ADMIN_PASSWORD) < 12
-    or len(ADMIN_TOKEN) < 32
-):
-    raise RuntimeError(
-        "Production requires a private ADMIN_USER, strong ADMIN_PASSWORD and ADMIN_TOKEN of at least 32 characters"
-    )
 
 BOOKING_STATUSES = {"reserved", "blocked", "pending", "completed", "cancelled"}
 CONFLICTING_BOOKING_STATUSES = {"reserved", "blocked"}
@@ -106,6 +89,7 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
+    expose_headers=["Retry-After"],
 )
 
 
@@ -135,67 +119,7 @@ class LoginRequest(BaseModel):
 class LoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
-
-
-ADMIN_LOGIN_MAX_FAILED = 5
-ADMIN_LOGIN_LOCKOUT_SECONDS = 15 * 60
-_admin_login_attempts: dict[str, dict[str, float]] = {}
-_admin_login_attempts_lock = Lock()
-
-
-def _admin_login_key(request: Request, username: str) -> str:
-    client_host = request.client.host if request.client else "unknown"
-    return f"{client_host}:{username.strip().lower()}"
-
-
-def _check_admin_login_lock(key: str) -> int:
-    now = time.monotonic()
-    with _admin_login_attempts_lock:
-        # Keep this process-local guard bounded even if an attacker rotates usernames.
-        expired = [
-            item_key
-            for item_key, item in _admin_login_attempts.items()
-            if item.get("blocked_until", 0) <= now
-            and item.get("last_attempt", 0) + ADMIN_LOGIN_LOCKOUT_SECONDS <= now
-        ]
-        for item_key in expired:
-            _admin_login_attempts.pop(item_key, None)
-
-        item = _admin_login_attempts.get(key)
-        if not item:
-            return 0
-
-        blocked_until = item.get("blocked_until", 0)
-        if blocked_until > now:
-            return max(1, int(blocked_until - now))
-
-        return 0
-
-
-def _record_admin_login_failure(key: str) -> bool:
-    now = time.monotonic()
-    with _admin_login_attempts_lock:
-        if key not in _admin_login_attempts and len(_admin_login_attempts) >= 10_000:
-            oldest_key = min(
-                _admin_login_attempts,
-                key=lambda item_key: _admin_login_attempts[item_key].get(
-                    "last_attempt", 0
-                ),
-            )
-            _admin_login_attempts.pop(oldest_key, None)
-
-        item = _admin_login_attempts.setdefault(key, {"failed": 0.0})
-        item["failed"] = item.get("failed", 0) + 1
-        item["last_attempt"] = now
-        if item["failed"] >= ADMIN_LOGIN_MAX_FAILED:
-            item["blocked_until"] = now + ADMIN_LOGIN_LOCKOUT_SECONDS
-            return True
-    return False
-
-
-def _clear_admin_login_failures(key: str) -> None:
-    with _admin_login_attempts_lock:
-        _admin_login_attempts.pop(key, None)
+    expires_in: int
 
 
 class PropertyBase(BaseModel):
@@ -231,7 +155,9 @@ class BookingBase(BaseModel):
     @classmethod
     def validate_date(cls, value: str) -> str:
         try:
-            datetime.strptime(value, "%Y-%m-%d")
+            parsed = datetime.strptime(value, "%Y-%m-%d")
+            if parsed.date().isoformat() != value:
+                raise ValueError("La fecha debe usar formato YYYY-MM-DD")
         except ValueError as exc:
             raise ValueError("La fecha debe usar formato YYYY-MM-DD") from exc
         return value
@@ -257,13 +183,25 @@ class BookingUpdate(BaseModel):
     phone: Optional[str] = Field(default=None, max_length=40)
     notes: Optional[str] = Field(default=None, max_length=1000)
 
+    @field_validator(
+        "property_id", "start_date", "end_date", "status",
+        "guest_name", "phone", "notes", mode="before"
+    )
+    @classmethod
+    def reject_explicit_null(cls, value):
+        if value is None:
+            raise ValueError("El campo no puede ser nulo; omitilo para conservar su valor")
+        return value
+
     @field_validator("start_date", "end_date")
     @classmethod
     def validate_optional_date(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
             return value
         try:
-            datetime.strptime(value, "%Y-%m-%d")
+            parsed = datetime.strptime(value, "%Y-%m-%d")
+            if parsed.date().isoformat() != value:
+                raise ValueError("La fecha debe usar formato YYYY-MM-DD")
         except ValueError as exc:
             raise ValueError("La fecha debe usar formato YYYY-MM-DD") from exc
         return value
@@ -279,11 +217,20 @@ class BookingUpdate(BaseModel):
 
 
 
-def get_db() -> sqlite3.Connection:
+@contextlib.contextmanager
+def get_db():
     Path(DATABASE_PATH).parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(DATABASE_PATH)
+    connection = sqlite3.connect(DATABASE_PATH, timeout=10)
     connection.row_factory = sqlite3.Row
-    return connection
+    connection.execute("PRAGMA foreign_keys = ON")
+    try:
+        with connection:
+            yield connection
+    finally:
+        connection.close()
+
+
+auth = AdminAuth(AuthSettings.from_env(), get_db)
 
 
 
@@ -298,43 +245,8 @@ def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
 
 
 
-def create_admin_token() -> str:
-    if not ADMIN_USER or not ADMIN_PASSWORD or len(ADMIN_TOKEN) < 32:
-        raise HTTPException(
-            status_code=503,
-            detail="El acceso administrativo todavía no fue configurado",
-        )
-
-    now = datetime.now(timezone.utc)
-    return jwt.encode(
-        {
-            "sub": ADMIN_USER,
-            "type": "admin",
-            "iat": now,
-            "exp": now + timedelta(minutes=ADMIN_SESSION_MINUTES),
-        },
-        ADMIN_TOKEN,
-        algorithm="HS256",
-    )
-
-
-def require_admin(authorization: str = Header(default="")) -> None:
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Sesión requerida")
-
-    try:
-        payload = jwt.decode(
-            authorization[7:],
-            ADMIN_TOKEN,
-            algorithms=["HS256"],
-        )
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="La sesión venció. Volvé a ingresar")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Sesión inválida")
-
-    if payload.get("type") != "admin" or payload.get("sub") != ADMIN_USER:
-        raise HTTPException(status_code=401, detail="Sesión inválida")
+def require_admin(authorization: str = Header(default="")) -> str:
+    return auth.require_session(authorization)
 
 
 IMAGE_TYPES = {
@@ -550,6 +462,7 @@ async def booking_privacy_cleanup_loop() -> None:
 @app.on_event("startup")
 async def startup() -> None:
     init_db()
+    auth.initialize()
     purge_expired_booking_personal_data()
     app.state.privacy_cleanup_task = asyncio.create_task(
         booking_privacy_cleanup_loop()
@@ -581,39 +494,14 @@ def health() -> dict[str, str]:
 
 @app.post("/api/auth/login", response_model=LoginResponse)
 def login(payload: LoginRequest, request: Request) -> LoginResponse:
-    if not ADMIN_USER or not ADMIN_PASSWORD or len(ADMIN_TOKEN) < 32:
-        raise HTTPException(
-            status_code=503,
-            detail="El acceso administrativo todavía no fue configurado",
-        )
+    client_host = request.client.host if request.client else "unknown"
+    return LoginResponse(**auth.login(payload.username, payload.password, client_host))
 
-    attempt_key = _admin_login_key(request, payload.username)
-    retry_after = _check_admin_login_lock(attempt_key)
-    if retry_after:
-        raise HTTPException(
-            status_code=429,
-            detail="Demasiados intentos. Volvé a intentar más tarde.",
-            headers={"Retry-After": str(retry_after)},
-        )
 
-    valid_user = secrets.compare_digest(
-        payload.username.strip().encode("utf-8"), ADMIN_USER.encode("utf-8")
-    )
-    valid_password = secrets.compare_digest(
-        payload.password.encode("utf-8"), ADMIN_PASSWORD.encode("utf-8")
-    )
-    if not valid_user or not valid_password:
-        locked = _record_admin_login_failure(attempt_key)
-        if locked:
-            raise HTTPException(
-                status_code=429,
-                detail="Demasiados intentos. Volvé a intentar más tarde.",
-                headers={"Retry-After": str(ADMIN_LOGIN_LOCKOUT_SECONDS)},
-            )
-        raise HTTPException(status_code=401, detail="Credenciales inválidas")
-
-    _clear_admin_login_failures(attempt_key)
-    return LoginResponse(access_token=create_admin_token())
+@app.post("/api/auth/logout")
+def logout(session_hash: str = Depends(require_admin)) -> dict[str, str]:
+    auth.logout(session_hash)
+    return {"status": "ok"}
 
 
 @app.get("/api/properties")
@@ -840,6 +728,8 @@ def create_booking(payload: BookingCreate) -> dict[str, Any]:
     booking_id = str(uuid.uuid4())
 
     with get_db() as db:
+        # Lock before checking overlaps so concurrent writes cannot double-book.
+        db.execute("BEGIN IMMEDIATE")
         property_exists = db.execute("SELECT id FROM properties WHERE id = ?", (payload.property_id,)).fetchone()
         if not property_exists:
             raise HTTPException(status_code=404, detail="Propiedad no encontrada")
@@ -882,6 +772,7 @@ def create_booking(payload: BookingCreate) -> dict[str, Any]:
 @app.patch("/api/admin/bookings/{booking_id}", dependencies=[Depends(require_admin)])
 def update_booking(booking_id: str, payload: BookingUpdate) -> dict[str, Any]:
     with get_db() as db:
+        db.execute("BEGIN IMMEDIATE")
         current = db.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
         if not current:
             raise HTTPException(status_code=404, detail="Reserva no encontrada")
@@ -891,6 +782,12 @@ def update_booking(booking_id: str, payload: BookingUpdate) -> dict[str, Any]:
         data.update(updates)
 
         validate_booking_dates(data["start_date"], data["end_date"])
+
+        property_exists = db.execute(
+            "SELECT id FROM properties WHERE id = ?", (data["property_id"],)
+        ).fetchone()
+        if not property_exists:
+            raise HTTPException(status_code=404, detail="Propiedad no encontrada")
 
         if data["status"] in CONFLICTING_BOOKING_STATUSES and has_booking_conflict(
             db,
