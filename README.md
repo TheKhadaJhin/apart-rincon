@@ -23,6 +23,25 @@ The application combines a responsive public website with a private operational 
 
 This project demonstrates how I translate a real business workflow into a deployed application with a React frontend, a FastAPI REST API and persistent data storage.
 
+## Improvements under review
+
+As of **2026-09-24**, [PR #1](https://github.com/TheKhadaJhin/apart-rincon/pull/1)
+contains implemented booking validation, expiring administrator sessions and automated
+tests. The PR is still open; these improvements have not been merged into `main`.
+
+**One concrete case:** two simultaneous requests attempt to reserve the same property
+for the same dates. A SQLite transaction covers both the overlap check and the write,
+so one request succeeds with `200` and the other returns `409 Conflict`; only one booking
+is stored.
+
+- [Implementation: booking creation and update](https://github.com/TheKhadaJhin/apart-rincon/blob/ea26ec3307746fca335d8391d3999c2f4d812be9/backend/app/main.py).
+- [Regression test: `test_simultaneous_creates_do_not_double_book`](https://github.com/TheKhadaJhin/apart-rincon/blob/ea26ec3307746fca335d8391d3999c2f4d812be9/backend/tests/test_bookings.py).
+- [Successful CI run from 2026-09-14](https://github.com/TheKhadaJhin/apart-rincon/actions/runs/34868963407): 49 backend tests, 22 frontend tests and the frontend build passed.
+
+This evidence describes the PR's tested code, not a production deployment. The
+[administrator migration guide](https://github.com/TheKhadaJhin/apart-rincon/blob/ea26ec3307746fca335d8391d3999c2f4d812be9/docs/ADMIN_ACCESS_MIGRATION.md)
+documents the configuration required before deployment.
+
 ## Business workflow
 
 ```mermaid
