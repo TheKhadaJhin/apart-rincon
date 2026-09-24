@@ -1,23 +1,37 @@
 import json
 import os
-import shutil
+import asyncio
+import contextlib
+import logging
 import sqlite3
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
 
+from .security import AdminAuth, AuthSettings
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Header,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
 load_dotenv()
 
-ADMIN_USER = os.getenv("ADMIN_USER", "admin@apartrincon.com")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "cambiar123")
-ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "dev-token-change-me")
+logger = logging.getLogger(__name__)
+
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
+is_production = ENVIRONMENT == "production"
+
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 DATABASE_PATH = os.getenv("DATABASE_PATH", "./apartrincon.db")
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "./static/uploads"))
@@ -25,9 +39,6 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 BOOKING_STATUSES = {"reserved", "blocked", "pending", "completed", "cancelled"}
 CONFLICTING_BOOKING_STATUSES = {"reserved", "blocked"}
-
-ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-is_production = ENVIRONMENT == "production"
 
 app = FastAPI(
     title="ApartRincón API",
@@ -38,31 +49,77 @@ app = FastAPI(
     openapi_url=None if is_production else "/openapi.json",
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        FRONTEND_URL,
+
+def normalize_origin(value: str) -> str:
+    value = str(value or "").strip().rstrip("/")
+    if not value:
+        return ""
+
+    parsed = urlparse(value)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return value
+
+
+frontend_origin = normalize_origin(FRONTEND_URL)
+trusted_https_origins = [
+    frontend_origin,
+    "https://www.apartrinconcba.com",
+    "https://apartrinconcba.com",
+]
+
+if is_production:
+    cors_origins = [
+        origin for origin in trusted_https_origins if origin.startswith("https://")
+    ]
+else:
+    cors_origins = [
+        frontend_origin,
         "https://www.apartrinconcba.com",
         "https://apartrinconcba.com",
         "http://localhost:5173",
         "http://127.0.0.1:5173",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    ]
+
+cors_origins = list(dict.fromkeys(origin for origin in cors_origins if origin))
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
+    expose_headers=["Retry-After"],
 )
+
+
+@app.middleware("http")
+async def add_security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    if request.url.path.startswith(("/api/auth", "/api/admin")):
+        response.headers["Cache-Control"] = "no-store"
+    if is_production:
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=31536000; includeSubDomains"
+        )
+    return response
 
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 
 class LoginRequest(BaseModel):
-    username: str
-    password: str
+    username: str = Field(min_length=1, max_length=160)
+    password: str = Field(min_length=1, max_length=256)
 
 
 class LoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    expires_in: int
 
 
 class PropertyBase(BaseModel):
@@ -86,19 +143,21 @@ class GalleryImageBase(BaseModel):
 
 
 class BookingBase(BaseModel):
-    property_id: str
+    property_id: str = Field(min_length=1, max_length=80)
     start_date: str
     end_date: str
     status: str = "reserved"
-    guest_name: str = ""
-    phone: str = ""
-    notes: str = ""
+    guest_name: str = Field(default="", max_length=120)
+    phone: str = Field(default="", max_length=40)
+    notes: str = Field(default="", max_length=1000)
 
     @field_validator("start_date", "end_date")
     @classmethod
     def validate_date(cls, value: str) -> str:
         try:
-            datetime.strptime(value, "%Y-%m-%d")
+            parsed = datetime.strptime(value, "%Y-%m-%d")
+            if parsed.date().isoformat() != value:
+                raise ValueError("La fecha debe usar formato YYYY-MM-DD")
         except ValueError as exc:
             raise ValueError("La fecha debe usar formato YYYY-MM-DD") from exc
         return value
@@ -116,13 +175,23 @@ class BookingCreate(BookingBase):
 
 
 class BookingUpdate(BaseModel):
-    property_id: Optional[str] = None
+    property_id: Optional[str] = Field(default=None, min_length=1, max_length=80)
     start_date: Optional[str] = None
     end_date: Optional[str] = None
     status: Optional[str] = None
-    guest_name: Optional[str] = None
-    phone: Optional[str] = None
-    notes: Optional[str] = None
+    guest_name: Optional[str] = Field(default=None, max_length=120)
+    phone: Optional[str] = Field(default=None, max_length=40)
+    notes: Optional[str] = Field(default=None, max_length=1000)
+
+    @field_validator(
+        "property_id", "start_date", "end_date", "status",
+        "guest_name", "phone", "notes", mode="before"
+    )
+    @classmethod
+    def reject_explicit_null(cls, value):
+        if value is None:
+            raise ValueError("El campo no puede ser nulo; omitilo para conservar su valor")
+        return value
 
     @field_validator("start_date", "end_date")
     @classmethod
@@ -130,7 +199,9 @@ class BookingUpdate(BaseModel):
         if value is None:
             return value
         try:
-            datetime.strptime(value, "%Y-%m-%d")
+            parsed = datetime.strptime(value, "%Y-%m-%d")
+            if parsed.date().isoformat() != value:
+                raise ValueError("La fecha debe usar formato YYYY-MM-DD")
         except ValueError as exc:
             raise ValueError("La fecha debe usar formato YYYY-MM-DD") from exc
         return value
@@ -146,11 +217,20 @@ class BookingUpdate(BaseModel):
 
 
 
-def get_db() -> sqlite3.Connection:
+@contextlib.contextmanager
+def get_db():
     Path(DATABASE_PATH).parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(DATABASE_PATH)
+    connection = sqlite3.connect(DATABASE_PATH, timeout=10)
     connection.row_factory = sqlite3.Row
-    return connection
+    connection.execute("PRAGMA foreign_keys = ON")
+    try:
+        with connection:
+            yield connection
+    finally:
+        connection.close()
+
+
+auth = AdminAuth(AuthSettings.from_env(), get_db)
 
 
 
@@ -165,10 +245,83 @@ def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
 
 
 
-def require_admin(authorization: str = Header(default="")) -> None:
-    expected = f"Bearer {ADMIN_TOKEN}"
-    if authorization != expected:
-        raise HTTPException(status_code=401, detail="No autorizado")
+def require_admin(authorization: str = Header(default="")) -> str:
+    return auth.require_session(authorization)
+
+
+IMAGE_TYPES = {
+    "image/jpeg": {"extensions": {".jpg", ".jpeg"}, "default": ".jpg"},
+    "image/png": {"extensions": {".png"}, "default": ".png"},
+    "image/webp": {"extensions": {".webp"}, "default": ".webp"},
+    "image/gif": {"extensions": {".gif"}, "default": ".gif"},
+}
+
+
+def detect_image_type(data: bytes) -> Optional[str]:
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if len(data) >= 12 and data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    return None
+
+
+def read_validated_image(file: UploadFile) -> tuple[bytes, str]:
+    max_bytes = max(1, int(os.getenv("UPLOAD_MAX_BYTES", str(8 * 1024 * 1024))))
+    data = file.file.read(max_bytes + 1)
+
+    if not data:
+        raise HTTPException(status_code=400, detail="El archivo está vacío")
+    if len(data) > max_bytes:
+        raise HTTPException(status_code=413, detail="La imagen no puede superar 8 MB")
+
+    detected_type = detect_image_type(data)
+    declared_type = (file.content_type or "").lower().strip()
+    suffix = Path(file.filename or "").suffix.lower()
+
+    if not detected_type or detected_type not in IMAGE_TYPES:
+        raise HTTPException(status_code=400, detail="El archivo no es una imagen JPG, PNG, WEBP o GIF válida")
+    if declared_type != detected_type:
+        raise HTTPException(status_code=400, detail="El tipo declarado no coincide con el archivo")
+    if suffix not in IMAGE_TYPES[detected_type]["extensions"]:
+        raise HTTPException(status_code=400, detail="La extensión no coincide con el contenido")
+
+    return data, suffix or IMAGE_TYPES[detected_type]["default"]
+
+
+def delete_local_upload(image_url: str) -> None:
+    if not str(image_url or "").startswith("/uploads/"):
+        return
+
+    filename = Path(str(image_url).removeprefix("/uploads/")).name
+    candidate = (UPLOAD_DIR / filename).resolve()
+    upload_root = UPLOAD_DIR.resolve()
+
+    if candidate.parent == upload_root and candidate.is_file():
+        candidate.unlink()
+
+
+def purge_expired_booking_personal_data() -> int:
+    retention_days = max(1, int(os.getenv("BOOKING_PERSONAL_DATA_RETENTION_DAYS", "365")))
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).date().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
+
+    with get_db() as db:
+        cursor = db.execute(
+            """
+            UPDATE bookings
+            SET guest_name = '', phone = '', notes = '',
+                personal_data_purged_at = ?, updated_at = ?
+            WHERE end_date <= ?
+              AND (guest_name != '' OR phone != '' OR notes != '')
+            """,
+            (now, now, cutoff),
+        )
+        db.commit()
+        return cursor.rowcount
 
 
 
@@ -203,11 +356,23 @@ def init_db() -> None:
                 guest_name TEXT DEFAULT '',
                 phone TEXT DEFAULT '',
                 notes TEXT DEFAULT '',
+                personal_data_purged_at TEXT DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY(property_id) REFERENCES properties(id)
             )
             """
+        )
+
+        booking_columns = {
+            row["name"] for row in db.execute("PRAGMA table_info(bookings)").fetchall()
+        }
+        if "personal_data_purged_at" not in booking_columns:
+            db.execute(
+                "ALTER TABLE bookings ADD COLUMN personal_data_purged_at TEXT DEFAULT ''"
+            )
+        db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_bookings_end_date ON bookings(end_date)"
         )
 
         db.execute(
@@ -277,14 +442,49 @@ def init_db() -> None:
         db.commit()
 
 
+async def booking_privacy_cleanup_loop() -> None:
+    interval = max(
+        300,
+        int(os.getenv("PRIVACY_CLEANUP_INTERVAL_SECONDS", "3600")),
+    )
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            purged = purge_expired_booking_personal_data()
+            if purged:
+                logger.info("Anonymized %s expired booking records", purged)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Booking privacy cleanup failed")
+
+
 @app.on_event("startup")
-def startup() -> None:
+async def startup() -> None:
     init_db()
+    auth.initialize()
+    purge_expired_booking_personal_data()
+    app.state.privacy_cleanup_task = asyncio.create_task(
+        booking_privacy_cleanup_loop()
+    )
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    cleanup_task = getattr(app.state, "privacy_cleanup_task", None)
+    if cleanup_task:
+        cleanup_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await cleanup_task
 
 
 @app.get("/")
 def root() -> dict[str, str]:
-    return {"status": "ok", "docs": "/docs", "properties": "/api/properties"}
+    return {
+        "status": "ok",
+        "docs": "disabled" if is_production else "/docs",
+        "properties": "/api/properties",
+    }
 
 
 @app.get("/api/health")
@@ -293,10 +493,15 @@ def health() -> dict[str, str]:
 
 
 @app.post("/api/auth/login", response_model=LoginResponse)
-def login(payload: LoginRequest) -> LoginResponse:
-    if payload.username != ADMIN_USER or payload.password != ADMIN_PASSWORD:
-        raise HTTPException(status_code=401, detail="Credenciales inválidas")
-    return LoginResponse(access_token=ADMIN_TOKEN)
+def login(payload: LoginRequest, request: Request) -> LoginResponse:
+    client_host = request.client.host if request.client else "unknown"
+    return LoginResponse(**auth.login(payload.username, payload.password, client_host))
+
+
+@app.post("/api/auth/logout")
+def logout(session_hash: str = Depends(require_admin)) -> dict[str, str]:
+    auth.logout(session_hash)
+    return {"status": "ok"}
 
 
 @app.get("/api/properties")
@@ -329,33 +534,32 @@ def list_admin_gallery() -> list[dict[str, Any]]:
 
 @app.post("/api/admin/gallery/images", dependencies=[Depends(require_admin)])
 def upload_gallery_image(file: UploadFile = File(...)) -> dict[str, Any]:
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Solo se permiten archivos de imagen")
-
-    suffix = Path(file.filename or "image").suffix.lower() or ".jpg"
-    if suffix not in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
-        raise HTTPException(status_code=400, detail="Formato no permitido. Usa JPG, PNG, WEBP o GIF")
+    image_data, suffix = read_validated_image(file)
 
     image_id = str(uuid.uuid4())
     filename = f"gallery-{uuid.uuid4().hex}{suffix}"
     destination = UPLOAD_DIR / filename
 
-    with destination.open("wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    with destination.open("xb") as buffer:
+        buffer.write(image_data)
 
     now = datetime.utcnow().isoformat()
     image_url = f"/uploads/{filename}"
 
-    with get_db() as db:
-        db.execute(
-            """
-            INSERT INTO gallery_images (id, image_url, title, category, created_at)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (image_id, image_url, "", "general", now),
-        )
-        db.commit()
-        row = db.execute("SELECT * FROM gallery_images WHERE id = ?", (image_id,)).fetchone()
+    try:
+        with get_db() as db:
+            db.execute(
+                """
+                INSERT INTO gallery_images (id, image_url, title, category, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (image_id, image_url, "", "general", now),
+            )
+            db.commit()
+            row = db.execute("SELECT * FROM gallery_images WHERE id = ?", (image_id,)).fetchone()
+    except Exception:
+        delete_local_upload(image_url)
+        raise
 
     return dict(row)
 
@@ -369,9 +573,7 @@ def delete_gallery_image(image_id: str) -> dict[str, str]:
 
         image_url = row["image_url"] or ""
         if image_url.startswith("/uploads/"):
-            image_path = UPLOAD_DIR / image_url.replace("/uploads/", "", 1)
-            if image_path.exists():
-                image_path.unlink()
+            delete_local_upload(image_url)
 
         db.execute("DELETE FROM gallery_images WHERE id = ?", (image_id,))
         db.commit()
@@ -395,9 +597,11 @@ def update_property(property_id: str, payload: PropertyBase) -> dict[str, Any]:
     now = datetime.utcnow().isoformat()
 
     with get_db() as db:
-        exists = db.execute("SELECT id FROM properties WHERE id = ?", (property_id,)).fetchone()
-        if not exists:
+        current = db.execute("SELECT * FROM properties WHERE id = ?", (property_id,)).fetchone()
+        if not current:
             raise HTTPException(status_code=404, detail="Propiedad no encontrada")
+
+        previous_images = set(row_to_dict(current).get("images") or [])
 
         db.execute(
             """
@@ -422,40 +626,46 @@ def update_property(property_id: str, payload: PropertyBase) -> dict[str, Any]:
         db.commit()
         row = db.execute("SELECT * FROM properties WHERE id = ?", (property_id,)).fetchone()
 
+    for removed_image in previous_images - set(payload.images):
+        delete_local_upload(removed_image)
+
     return row_to_dict(row)
 
 
 @app.post("/api/admin/properties/{property_id}/images", dependencies=[Depends(require_admin)])
 def upload_property_image(property_id: str, file: UploadFile = File(...)) -> dict[str, Any]:
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Solo se permiten archivos de imagen")
+    image_data, suffix = read_validated_image(file)
 
-    suffix = Path(file.filename or "image").suffix.lower() or ".jpg"
-    if suffix not in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
-        raise HTTPException(status_code=400, detail="Formato no permitido. Usa JPG, PNG, WEBP o GIF")
-
-    filename = f"{property_id}-{uuid.uuid4().hex}{suffix}"
+    safe_property_id = "".join(
+        character for character in property_id if character.isalnum() or character in {"-", "_"}
+    )[:60] or "property"
+    filename = f"{safe_property_id}-{uuid.uuid4().hex}{suffix}"
     destination = UPLOAD_DIR / filename
 
-    with get_db() as db:
-        row = db.execute("SELECT * FROM properties WHERE id = ?", (property_id,)).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Propiedad no encontrada")
+    image_url = f"/uploads/{filename}"
+    try:
+        with get_db() as db:
+            row = db.execute("SELECT * FROM properties WHERE id = ?", (property_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Propiedad no encontrada")
 
-        with destination.open("wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            with destination.open("xb") as buffer:
+                buffer.write(image_data)
 
-        data = row_to_dict(row)
-        images = data.get("images") or []
-        images.append(f"/uploads/{filename}")
-        now = datetime.utcnow().isoformat()
+            data = row_to_dict(row)
+            images = data.get("images") or []
+            images.append(image_url)
+            now = datetime.utcnow().isoformat()
 
-        db.execute(
-            "UPDATE properties SET images = ?, updated_at = ? WHERE id = ?",
-            (json.dumps(images, ensure_ascii=False), now, property_id),
-        )
-        db.commit()
-        updated = db.execute("SELECT * FROM properties WHERE id = ?", (property_id,)).fetchone()
+            db.execute(
+                "UPDATE properties SET images = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(images, ensure_ascii=False), now, property_id),
+            )
+            db.commit()
+            updated = db.execute("SELECT * FROM properties WHERE id = ?", (property_id,)).fetchone()
+    except Exception:
+        delete_local_upload(image_url)
+        raise
 
     return row_to_dict(updated)
 
@@ -499,6 +709,17 @@ def list_admin_bookings() -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+@app.post("/api/admin/privacy/purge-bookings", dependencies=[Depends(require_admin)])
+def purge_booking_data_now() -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "purged_bookings": purge_expired_booking_personal_data(),
+        "retention_days": max(
+            1, int(os.getenv("BOOKING_PERSONAL_DATA_RETENTION_DAYS", "365"))
+        ),
+    }
+
+
 @app.post("/api/admin/bookings", dependencies=[Depends(require_admin)])
 def create_booking(payload: BookingCreate) -> dict[str, Any]:
     validate_booking_dates(payload.start_date, payload.end_date)
@@ -507,6 +728,8 @@ def create_booking(payload: BookingCreate) -> dict[str, Any]:
     booking_id = str(uuid.uuid4())
 
     with get_db() as db:
+        # Lock before checking overlaps so concurrent writes cannot double-book.
+        db.execute("BEGIN IMMEDIATE")
         property_exists = db.execute("SELECT id FROM properties WHERE id = ?", (payload.property_id,)).fetchone()
         if not property_exists:
             raise HTTPException(status_code=404, detail="Propiedad no encontrada")
@@ -549,6 +772,7 @@ def create_booking(payload: BookingCreate) -> dict[str, Any]:
 @app.patch("/api/admin/bookings/{booking_id}", dependencies=[Depends(require_admin)])
 def update_booking(booking_id: str, payload: BookingUpdate) -> dict[str, Any]:
     with get_db() as db:
+        db.execute("BEGIN IMMEDIATE")
         current = db.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
         if not current:
             raise HTTPException(status_code=404, detail="Reserva no encontrada")
@@ -558,6 +782,12 @@ def update_booking(booking_id: str, payload: BookingUpdate) -> dict[str, Any]:
         data.update(updates)
 
         validate_booking_dates(data["start_date"], data["end_date"])
+
+        property_exists = db.execute(
+            "SELECT id FROM properties WHERE id = ?", (data["property_id"],)
+        ).fetchone()
+        if not property_exists:
+            raise HTTPException(status_code=404, detail="Propiedad no encontrada")
 
         if data["status"] in CONFLICTING_BOOKING_STATUSES and has_booking_conflict(
             db,

@@ -22,3 +22,8 @@ build/
 # system
 .DS_Store
 Thumbs.db
+
+# local test output
+.pytest_cache/
+.coverage
+htmlcov/

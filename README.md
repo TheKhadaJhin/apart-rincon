@@ -21,7 +21,7 @@ Apart Rincón is a full-stack web platform built for a real short-term rental bu
 
 The application combines a responsive public website with a private operational dashboard. Guests can explore the properties, services, photographs, reviews and location before starting a personalized WhatsApp inquiry. Administrators manage property content, gallery images and the reservation calendar through protected API routes.
 
-This project demonstrates how I translate a real business workflow into a deployed application with a React frontend, a FastAPI REST API and persistent data storage.
+This project demonstrates how I translate a real business workflow into a deployed application with a React frontend, a FastAPI REST API and database-backed storage.
 
 ## Improvements under review
 
@@ -67,13 +67,13 @@ Availability is intentionally kept private. Guests browse the catalogue and cont
 - Responsive multi-page website built with React and Vite.
 - Property catalogue with capacity, services, accessibility information and image sliders.
 - General photo gallery managed independently from property images.
-- Google review highlights, map integration and business contact information.
+- Links to publicly verifiable Google reviews, map integration and business contact information.
 - Pre-filled WhatsApp links that simplify availability enquiries.
 - Content loaded from a FastAPI REST API.
 
 ### Private administration
 
-- Credential-based login and bearer-token protection for administrative routes.
+- Argon2id password verification, expiring bearer sessions, server-side logout and a login attempt limit shared across API workers.
 - Property content editing and multiple image uploads.
 - Gallery image upload and deletion workflows.
 - Reservation creation, editing, status management and deletion.
@@ -92,16 +92,20 @@ Availability is intentionally kept private. Guests browse the catalogue and cont
 | Media | FastAPI uploads and static file serving | Property and gallery image management |
 | Integration | WhatsApp, Google Maps, Google Reviews, Instagram | Customer contact and business presence |
 | Deployment | Vercel, custom domain, separately deployed API | Production delivery |
-| Workflow | Git and GitHub | Version control and project documentation |
+| Workflow | Git, GitHub Actions, pytest and Node.js tests | Version control and automated verification |
+
+> **Production persistence requirement:** SQLite and local uploads need a persistent volume. On an ephemeral host, configure durable storage or migrate the database/media to managed services before accepting real reservations.
 
 ## Architecture and engineering decisions
 
 - **Separated frontend and backend:** the React client consumes a dedicated REST API, keeping presentation and business logic independent.
 - **Protected operational data:** public routes expose catalogue and gallery content; reservation and administration routes require authorization.
 - **Server-side business rules:** the API rejects invalid date formats and returns an HTTP `409` response when an active reservation or block overlaps an existing one.
-- **Environment-based configuration:** API URLs, credentials, tokens, database paths and external links are configured outside the source code.
+- **Environment-based configuration:** API URLs, administrator password hashes, database paths and external links are configured outside the source code.
 - **Development-only API documentation:** Swagger UI, ReDoc and the OpenAPI document are disabled when the API runs with `ENVIRONMENT=production`.
 - **Controlled origins:** CORS is configured for the production domains and local development clients.
+- **Data minimization:** guest name, phone and notes are automatically anonymized after the configured retention period.
+- **Upload hardening:** image size, MIME type, extension and file signature are validated before storage; removed local images are deleted from disk.
 
 ## Project structure
 
@@ -131,7 +135,7 @@ apart-rincon/
 ### Prerequisites
 
 - Python 3.10 or newer
-- Node.js 18 or newer
+- Node.js 22 (used in CI)
 - npm
 - Git
 
@@ -168,7 +172,15 @@ cp .env.example .env
 
 On Windows, use `copy .env.example .env` if `cp` is unavailable.
 
-Replace the placeholder administrator credentials and token in `.env`, then start the API:
+Generate a password hash with the hidden prompt:
+
+```bash
+python -m app.hash_password
+```
+
+Set your private `ADMIN_USER` in `.env` and paste the complete `ADMIN_PASSWORD_HASH='...'` line printed by the command. The password must contain 12–256 characters. Keep the hash in the backend environment only.
+
+Start the API:
 
 ```bash
 uvicorn app.main:app --reload
@@ -182,12 +194,14 @@ Open a second terminal:
 
 ```bash
 cd apart-rincon/frontend
-npm install
+npm ci
 cp .env.example .env
 npm run dev
 ```
 
-The frontend will be available at `http://localhost:5173`.
+The frontend will be available at `http://localhost:5173`. Open `/admin` and sign in using the username and password you configured. Sessions last 60 minutes by default; reloading the page requires signing in again.
+
+For an existing installation, follow the [administrator access migration guide](docs/ADMIN_ACCESS_MIGRATION.md) before deployment.
 
 ## Environment variables
 
@@ -196,11 +210,14 @@ The frontend will be available at `http://localhost:5173`.
 | Variable | Description | Local example |
 |---|---|---|
 | `ADMIN_USER` | Administrator login username | `admin@example.com` |
-| `ADMIN_PASSWORD` | Administrator login password | Use a strong private value |
-| `ADMIN_TOKEN` | Bearer token returned after a valid login | Use a long random value |
+| `ADMIN_PASSWORD_HASH` | Argon2id password hash generated by `python -m app.hash_password` | Paste the generated hash; never the plaintext password |
+| `ADMIN_SESSION_MINUTES` | Session lifetime in minutes, from 5 to 1440 | `60` |
 | `FRONTEND_URL` | Allowed frontend origin | `http://localhost:5173` |
 | `DATABASE_PATH` | SQLite database location | `./apartrincon.db` |
 | `UPLOAD_DIR` | Uploaded-image directory | `./static/uploads` |
+| `UPLOAD_MAX_BYTES` | Maximum uploaded image size | `8388608` |
+| `BOOKING_PERSONAL_DATA_RETENTION_DAYS` | Days before guest fields are anonymized | `365` |
+| `PRIVACY_CLEANUP_INTERVAL_SECONDS` | Frequency of automatic retention cleanup | `3600` |
 | `ENVIRONMENT` | Set to `production` to disable API documentation | `development` |
 
 ### Frontend
@@ -232,6 +249,7 @@ The frontend will be available at `http://localhost:5173`.
 
 | Method | Route | Purpose |
 |---|---|---|
+| `POST` | `/api/auth/logout` | Revoke the current administrator session |
 | `GET` | `/api/admin/properties` | List properties for administration |
 | `PUT` | `/api/admin/properties/{property_id}` | Update a property |
 | `POST` | `/api/admin/properties/{property_id}/images` | Upload property images |
@@ -242,8 +260,15 @@ The frontend will be available at `http://localhost:5173`.
 | `POST` | `/api/admin/bookings` | Create a booking or block |
 | `PATCH` | `/api/admin/bookings/{booking_id}` | Update a booking |
 | `DELETE` | `/api/admin/bookings/{booking_id}` | Delete a booking |
+| `POST` | `/api/admin/privacy/purge-bookings` | Apply booking-data retention immediately |
 
-Protected routes expect the token in the `Authorization: Bearer <token>` header.
+Protected routes expect the token in the `Authorization: Bearer <token>` header. Login returns `access_token`, `token_type` and `expires_in` (seconds). The database stores a token digest, expiry and credential version. Logout revokes the current session; changing the configured username or password hash invalidates previous sessions after API workers restart.
+
+The browser keeps the token in memory and clears private data on logout or expiry. If logout cannot reach the API, the panel closes locally and explains that server revocation was not confirmed.
+
+Login permits five attempts per client IP within 15 minutes; a successful login resets that IP's counter. Further attempts return `429` with `Retry-After`. Deploy behind a correctly configured trusted proxy as described in the migration guide.
+
+For booking updates, omit fields to keep their values; explicit `null` is rejected with `422`. Use an empty string to clear guest name, phone or notes. Dates must use `YYYY-MM-DD`, checkout must be after check-in, and the property must exist. Conflict checks and writes share a SQLite transaction so concurrent reservations cannot claim the same dates.
 
 ## What this project demonstrates
 
@@ -254,15 +279,44 @@ Protected routes expect the token in the `Authorization: Bearer <token>` header.
 - Integration of external services without exposing private reservation data.
 - Iterative delivery using Git and production deployments.
 
+## Automated verification
+
+[Quality checks and execution results](https://github.com/TheKhadaJhin/apart-rincon/actions/workflows/quality.yml) run on pushes and pull requests. Tests use temporary SQLite databases, synthetic credentials and generated test sessions; no production data or services are needed.
+
+From `backend/`, with the virtual environment active:
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest tests -v --cov=app --cov-report=term-missing
+```
+
+From `frontend/`:
+
+```bash
+npm ci
+npm test
+npm run build
+```
+
+| Evidence | What to inspect |
+|---|---|
+| [Booking integration tests](backend/tests/test_bookings.py) | Invalid edits, nonexistent properties, overlapping dates, status changes and concurrent booking requests |
+| [Authentication integration tests](backend/tests/test_auth.py) | Password verification, session expiry/revocation, credential rotation and shared login throttling |
+| [Existing feature regression tests](backend/tests/test_existing_features.py) | Upload validation, file removal, data retention and existing SQLite migration |
+| [Frontend session tests](frontend/tests/adminApi.test.mjs) | Authenticated JSON/uploads, expiry, logout, useful API errors and late responses |
+| [Authentication implementation](backend/app/security.py) / [frontend API client](frontend/src/adminApi.mjs) | Follow the tested behavior through Python and JavaScript |
+
+CI reports the actual test results and frontend build status. A passing build does not replace a browser check of the deployed administrator workflow.
+
 ## Possible next steps
 
-- Add automated API and frontend tests.
+- Add browser tests for the complete administrator workflow.
 - Migrate production data to PostgreSQL.
 - Store uploaded media in an object-storage service.
 - Add Docker-based local development.
-- Add continuous integration for tests and code quality checks.
-- Replace the static bearer token with expiring signed sessions and password hashing.
+- Support multiple administrator accounts and optional multi-factor authentication.
 
 ## Author
 
 Built by [Mario Fuentes](https://github.com/TheKhadaJhin) as an end-to-end solution for a real rental business.
+
